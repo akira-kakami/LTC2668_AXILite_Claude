@@ -2,7 +2,8 @@
 
 Xilinx FPGA (Zynq / Vitis) 向け **LTC2668 16ch 16bit DAC** 制御モジュールです。  
 AXI4-Lite スレーブ + SPI マスターを SystemVerilog RTL で実装し、Xilinx BSP (`Xil_Out32` / `Xil_In32`) ベースの C ドライバを付属します。
-
+URL
+https://claude.ai/chat/9a1d7436-34da-43a2-bbae-d15794dd84f7
 ---
 
 ## ファイル構成
