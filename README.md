@@ -16,7 +16,9 @@ https://claude.ai/chat/9a1d7436-34da-43a2-bbae-d15794dd84f7
 ├── xgui/
 │   └── ltc2668_axi.tcl      # Vivado IP カスタマイズ GUI スクリプト
 ├── sim/
-│   └── ltc2668_axi_tb.sv    # SystemVerilog テストベンチ
+│   ├── ltc2668_axi_tb.sv        # SystemVerilog テストベンチ (スタンドアロン)
+│   ├── ltc2668_axi_vip_tb.sv    # AXI VIP テストベンチ (Vivado xsim 用)
+│   └── create_vip_project.tcl   # Vivado VIP シミュレーションプロジェクト自動生成
 ├── ltc2668_drv.h            # C ドライバ ヘッダ
 ├── ltc2668_drv.c            # C ドライバ 実装
 ├── ltc2668_example.c        # 使用例
@@ -190,13 +192,13 @@ IP Catalog に登録して Block Design から GUI で設定できます。
 
 ## シミュレーション
 
-### テストケース一覧
+### テストケース一覧（両テストベンチ共通）
 
 | TC | 内容 |
 |----|------|
-| TC1 | リセット後のデフォルトレジスタ値確認 |
+| TC1 | リセット後のデフォルトレジスタ値確認（全 9 レジスタ） |
 | TC2 | `SPI_CLK_DIV` 書き込み・読み返し |
-| TC3 | `CMD_WRITE_N` – チャネル書き込み（SPI フレーム検証） |
+| TC3 | `CMD_WRITE_N` – チャネル書き込み（SPI フレーム照合） |
 | TC4 | `CMD_WRITE_UPDATE_N` – 書き込み＋即時更新 |
 | TC5 | `CMD_UPDATE_ALL` – 全チャネル同時更新 |
 | TC6 | `CMD_SPAN_N` – チャネル個別スパン設定 |
@@ -205,12 +207,29 @@ IP Catalog に登録して Block Design から GUI で設定できます。
 | TC9 | `CMD_TOGGLE_SEL` – トグル対象チャネル設定 |
 | TC10 | `CMD_MUX_OUT` – MUX 出力設定 |
 | TC11 | `LDAC_N` / `CLR_N` ハードウェア制御 |
-| TC12 | SPI 転送中の `STATUS.BUSY` フラグ確認 |
+| TC12 | SPI 転送中の `STATUS.BUSY` / `SPI_DONE` フラグ確認 |
 
-### Vivado Simulator (xsim) で実行
+---
 
+### テストベンチ A: スタンドアロン (`ltc2668_axi_tb.sv`)
+
+Vivado 以外のシミュレータでも動作します。
+
+**ModelSim / Questa**
+```bash
+vlog -sv hdl/ltc2668_axi.sv sim/ltc2668_axi_tb.sv
+vsim ltc2668_axi_tb -do "run -all; quit"
+```
+
+**Icarus Verilog + GTKWave**
+```bash
+iverilog -g2012 -o sim_out hdl/ltc2668_axi.sv sim/ltc2668_axi_tb.sv
+vvp sim_out
+gtkwave ltc2668_axi_tb.vcd
+```
+
+**Vivado xsim（手動設定）**
 ```tcl
-# Vivado Tcl Console または .tcl スクリプトとして実行
 create_project sim_ltc2668 ./sim_ltc2668 -part xc7z020clg400-1 -force
 add_files      hdl/ltc2668_axi.sv
 add_files -fileset sim_1 sim/ltc2668_axi_tb.sv
@@ -219,19 +238,53 @@ launch_simulation
 run all
 ```
 
-### ModelSim / Questa で実行
+---
 
-```bash
-vlog -sv hdl/ltc2668_axi.sv sim/ltc2668_axi_tb.sv
-vsim ltc2668_axi_tb -do "run -all; quit"
+### テストベンチ B: AXI VIP (`ltc2668_axi_vip_tb.sv`) ― Vivado 推奨
+
+Xilinx AXI Verification IP (AXI VIP) を使用した Vivado 専用テストベンチです。
+プロトコル準拠の AXI4-Lite マスタートランザクションを VIP エージェント API で生成します。
+
+#### VIP テストベンチの構成
+
+```
+ltc2668_axi_vip_tb
+  ├─ axi_vip_mst_0          ← AXI VIP (Master, AXI4LITE, 32-bit/8-bit addr)
+  │    └─ axi_vip_mst_0_mst_t  mst_agent  ← VIP エージェント
+  └─ ltc2668_axi (DUT)      ← テスト対象
 ```
 
-### Icarus Verilog + GTKWave で実行
+#### 使用する主な VIP API
+
+| API | 説明 |
+|-----|------|
+| `mst_agent.start_master()` | マスターエージェント起動 |
+| `mst_agent.AXI4LITE_WRITE_BURST(addr, prot, data, resp)` | AXI4-Lite ライト |
+| `mst_agent.AXI4LITE_READ_BURST(addr, prot, data, resp)` | AXI4-Lite リード |
+
+#### 実行方法（ワンコマンド）
 
 ```bash
-iverilog -g2012 -o sim_out hdl/ltc2668_axi.sv sim/ltc2668_axi_tb.sv
-vvp sim_out
-gtkwave ltc2668_axi_tb.vcd
+# Vivado コマンドライン（バッチモード）
+vivado -mode batch -source sim/create_vip_project.tcl
+```
+
+```tcl
+# Vivado Tcl Console から実行
+source sim/create_vip_project.tcl
+```
+
+`create_vip_project.tcl` が行う処理：
+1. Vivado プロジェクト `vivado_vip_sim/` を作成
+2. AXI VIP IP（Master / AXI4LITE / 32-bit）を自動生成
+3. テストベンチを sim_1 fileset に追加
+4. `launch_simulation` → `run all` を自動実行
+
+#### 再実行（プロジェクト作成済みの場合）
+
+```tcl
+relaunch_sim
+run all
 ```
 
 ---
