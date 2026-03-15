@@ -10,12 +10,14 @@ https://claude.ai/chat/9a1d7436-34da-43a2-bbae-d15794dd84f7
 
 ```
 .
-├── rtl/
+├── component.xml            # Vivado IP-XACT 記述子（IP Creator 用）
+├── hdl/
 │   └── ltc2668_axi.sv       # AXI4-Lite スレーブ + SPI マスター RTL
-├── driver/
-│   ├── ltc2668_drv.h        # C ドライバ ヘッダ
-│   ├── ltc2668_drv.c        # C ドライバ 実装
-│   └── ltc2668_example.c    # 使用例
+├── xgui/
+│   └── ltc2668_axi.tcl      # Vivado IP カスタマイズ GUI スクリプト
+├── ltc2668_drv.h            # C ドライバ ヘッダ
+├── ltc2668_drv.c            # C ドライバ 実装
+├── ltc2668_example.c        # 使用例
 └── README.md
 ```
 
@@ -160,12 +162,27 @@ Xil_Out32(LTC2668_BASE_ADDR + LTC2668_REG_CTRL, 0);
 
 ## Vivado 組み込み手順
 
-1. `ltc2668_axi.sv` を RTL ソースとして追加
+### 方法 A: IP Creator（推奨）
+
+IP Catalog に登録して Block Design から GUI で設定できます。
+
+1. Vivado を開き、**Tools → Settings → IP → Repository** を選択
+2. `+` ボタンでこのリポジトリのルートディレクトリを追加
+3. IP Catalog に **LTC2668 AXI DAC Controller** が表示されることを確認
+4. Block Design で **Add IP** → `LTC2668` を検索して追加
+5. IP をダブルクリックして設定ダイアログを開き、パラメータを設定：
+   - **AXI Address Width**: デフォルト 8（変更不要）
+   - **SPI Clock Divider**: AXI クロックに応じて調整（100MHz → 4 で 12.5MHz）
+6. `Run Connection Automation` で AXI4-Lite ポートを Zynq PS に自動接続
+7. `spi_sck` / `spi_sdi` / `spi_cs_n` / `ldac_n` / `clr_n` を外部ポートに引き出し
+8. Address Editor でベースアドレスを割り当て（例: `0x43C0_0000`）
+9. Vitis でドライバファイル（`ltc2668_drv.h`, `ltc2668_drv.c`）をプロジェクトに追加
+
+### 方法 B: 手動追加
+
+1. `hdl/ltc2668_axi.sv` を RTL ソースとして追加
 2. Block Design で **Add Module** → `ltc2668_axi` を追加
-3. AXI4-Lite ポートを Zynq PS の `M_AXI_GP0` に接続
-4. `spi_sck` / `spi_sdi` / `spi_cs_n` を外部ポートに引き出し
-5. Address Editor でベースアドレスを割り当て（例: `0x43C0_0000`）
-6. Vitis でドライバファイル 3 点をプロジェクトに追加
+3. 以降は方法 A の手順 6〜9 と同様
 
 ---
 
