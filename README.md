@@ -15,6 +15,8 @@ https://claude.ai/chat/9a1d7436-34da-43a2-bbae-d15794dd84f7
 │   └── ltc2668_axi.sv       # AXI4-Lite スレーブ + SPI マスター RTL
 ├── xgui/
 │   └── ltc2668_axi.tcl      # Vivado IP カスタマイズ GUI スクリプト
+├── sim/
+│   └── ltc2668_axi_tb.sv    # SystemVerilog テストベンチ
 ├── ltc2668_drv.h            # C ドライバ ヘッダ
 ├── ltc2668_drv.c            # C ドライバ 実装
 ├── ltc2668_example.c        # 使用例
@@ -183,6 +185,54 @@ IP Catalog に登録して Block Design から GUI で設定できます。
 1. `hdl/ltc2668_axi.sv` を RTL ソースとして追加
 2. Block Design で **Add Module** → `ltc2668_axi` を追加
 3. 以降は方法 A の手順 6〜9 と同様
+
+---
+
+## シミュレーション
+
+### テストケース一覧
+
+| TC | 内容 |
+|----|------|
+| TC1 | リセット後のデフォルトレジスタ値確認 |
+| TC2 | `SPI_CLK_DIV` 書き込み・読み返し |
+| TC3 | `CMD_WRITE_N` – チャネル書き込み（SPI フレーム検証） |
+| TC4 | `CMD_WRITE_UPDATE_N` – 書き込み＋即時更新 |
+| TC5 | `CMD_UPDATE_ALL` – 全チャネル同時更新 |
+| TC6 | `CMD_SPAN_N` – チャネル個別スパン設定 |
+| TC7 | `CMD_SPAN_ALL` – 全チャネルスパン一括設定 |
+| TC8 | `CMD_POWER_DOWN_N` – チャネルパワーダウン |
+| TC9 | `CMD_TOGGLE_SEL` – トグル対象チャネル設定 |
+| TC10 | `CMD_MUX_OUT` – MUX 出力設定 |
+| TC11 | `LDAC_N` / `CLR_N` ハードウェア制御 |
+| TC12 | SPI 転送中の `STATUS.BUSY` フラグ確認 |
+
+### Vivado Simulator (xsim) で実行
+
+```tcl
+# Vivado Tcl Console または .tcl スクリプトとして実行
+create_project sim_ltc2668 ./sim_ltc2668 -part xc7z020clg400-1 -force
+add_files      hdl/ltc2668_axi.sv
+add_files -fileset sim_1 sim/ltc2668_axi_tb.sv
+set_property top ltc2668_axi_tb [get_filesets sim_1]
+launch_simulation
+run all
+```
+
+### ModelSim / Questa で実行
+
+```bash
+vlog -sv hdl/ltc2668_axi.sv sim/ltc2668_axi_tb.sv
+vsim ltc2668_axi_tb -do "run -all; quit"
+```
+
+### Icarus Verilog + GTKWave で実行
+
+```bash
+iverilog -g2012 -o sim_out hdl/ltc2668_axi.sv sim/ltc2668_axi_tb.sv
+vvp sim_out
+gtkwave ltc2668_axi_tb.vcd
+```
 
 ---
 
