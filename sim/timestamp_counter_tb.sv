@@ -32,14 +32,23 @@ module timestamp_counter_tb;
     localparam integer AXI_DATA_WIDTH = 32;
     localparam integer CLK_PERIOD     = 10;   // 100 MHz
 
+    // DUT parameters (テストベンチ側で一致させる)
+    localparam longint CLK_FREQ_HZ = 100_000_000;
+    localparam longint NS_PER_TICK = 100;   // 100 ns/tick (PRESCALE_DEFAULT = 9)
+
+    // PRESCALE_DEFAULT の期待値 (RTL と同じ式)
+    localparam int PRESCALE_DEFAULT_EXP =
+        int'((NS_PER_TICK * CLK_FREQ_HZ / 1_000_000_000) - 1);
+
     // Register Addresses
-    localparam xil_axi_ulong ADDR_CTRL     = 8'h00;
-    localparam xil_axi_ulong ADDR_STATUS   = 8'h04;
-    localparam xil_axi_ulong ADDR_CNT_LO   = 8'h08;
-    localparam xil_axi_ulong ADDR_CNT_HI   = 8'h0C;
-    localparam xil_axi_ulong ADDR_SNAP_LO  = 8'h10;
-    localparam xil_axi_ulong ADDR_SNAP_HI  = 8'h14;
-    localparam xil_axi_ulong ADDR_PRESCALE = 8'h18;
+    localparam xil_axi_ulong ADDR_CTRL        = 8'h00;
+    localparam xil_axi_ulong ADDR_STATUS      = 8'h04;
+    localparam xil_axi_ulong ADDR_CNT_LO      = 8'h08;
+    localparam xil_axi_ulong ADDR_CNT_HI      = 8'h0C;
+    localparam xil_axi_ulong ADDR_SNAP_LO     = 8'h10;
+    localparam xil_axi_ulong ADDR_SNAP_HI     = 8'h14;
+    localparam xil_axi_ulong ADDR_PRESCALE    = 8'h18;
+    localparam xil_axi_ulong ADDR_NS_PER_TICK = 8'h1C;
 
     // CTRL bit masks
     localparam logic [31:0] CTRL_START = 32'h1;
@@ -122,7 +131,9 @@ module timestamp_counter_tb;
     // -------------------------------------------------------------------------
     timestamp_counter #(
         .AXI_ADDR_WIDTH (AXI_ADDR_WIDTH),
-        .AXI_DATA_WIDTH (AXI_DATA_WIDTH)
+        .AXI_DATA_WIDTH (AXI_DATA_WIDTH),
+        .CLK_FREQ_HZ    (CLK_FREQ_HZ),
+        .NS_PER_TICK    (NS_PER_TICK)
     ) dut (
         .s_axi_aclk    (aclk),
         .s_axi_aresetn (aresetn),
@@ -225,11 +236,12 @@ module timestamp_counter_tb;
         // =====================================================================
         $display("\n[TC1] Default register values after reset");
 
-        axil_read(ADDR_CTRL,     rdata); check("CTRL default",      rdata[0], 32'h2); // STOP=1
-        axil_read(ADDR_STATUS,   rdata); check("STATUS default",    rdata[0], 32'h0);
-        axil_read(ADDR_CNT_LO,   rdata); check("CNT_LO default",    rdata[0], 32'h0);
-        axil_read(ADDR_CNT_HI,   rdata); check("CNT_HI default",    rdata[0], 32'h0);
-        axil_read(ADDR_PRESCALE, rdata); check("PRESCALE default",  rdata[0], 32'h0);
+        axil_read(ADDR_CTRL,        rdata); check("CTRL default",         rdata[0], 32'h2);
+        axil_read(ADDR_STATUS,      rdata); check("STATUS default",       rdata[0], 32'h0);
+        axil_read(ADDR_CNT_LO,      rdata); check("CNT_LO default",       rdata[0], 32'h0);
+        axil_read(ADDR_CNT_HI,      rdata); check("CNT_HI default",       rdata[0], 32'h0);
+        axil_read(ADDR_PRESCALE,    rdata); check("PRESCALE default",      rdata[0], 32'(PRESCALE_DEFAULT_EXP));
+        axil_read(ADDR_NS_PER_TICK, rdata); check("NS_PER_TICK (RO)",      rdata[0], 32'(NS_PER_TICK));
 
         // =====================================================================
         // TC2: START / STOP 制御
@@ -243,8 +255,8 @@ module timestamp_counter_tb;
         axil_read(ADDR_STATUS, rdata);
         check("STATUS.RUNNING after START", (rdata[0] & STAT_RUNNING), 32'h1);
 
-        // 少し待ってカウンタが増えていることを確認
-        repeat(20) @(posedge aclk);
+        // PRESCALE_DEFAULT サイクル × 5 tick 分待つ
+        repeat((PRESCALE_DEFAULT_EXP + 1) * 5 + 10) @(posedge aclk);
         axil_read(ADDR_CNT_LO, rdata);
         check_nonzero("CNT_LO increments after START", rdata[0]);
 
@@ -299,33 +311,43 @@ module timestamp_counter_tb;
         wdata[0] = CTRL_RESET; axil_write(ADDR_CTRL, wdata);
         repeat(3) @(posedge aclk);
 
-        // PRESCALE=9 → 10 クロックに 1 カウント
-        wdata[0] = 32'h9;
-        axil_write(ADDR_PRESCALE, wdata);
+        // リセット後 PRESCALE が NS_PER_TICK 由来のデフォルト値に戻ることを確認
         axil_read(ADDR_PRESCALE, rdata);
-        check("PRESCALE readback = 9", rdata[0], 32'h9);
+        check("PRESCALE restored to default after reset",
+              rdata[0], 32'(PRESCALE_DEFAULT_EXP));
 
-        wdata[0] = CTRL_START; axil_write(ADDR_CTRL, wdata);
-        repeat(100) @(posedge aclk);   // 100 クロック → 約 10 カウント期待
-        wdata[0] = CTRL_STOP;  axil_write(ADDR_CTRL, wdata);
-        axil_read(ADDR_CNT_LO, rdata);
+        // PRESCALE を変更: 倍の周期 (2 × NS_PER_TICK)
         begin
-            int expected_min = 8;   // 若干のレイテンシを許容
-            int expected_max = 12;
-            int cnt_val = int'(rdata[0]);
-            if (cnt_val >= expected_min && cnt_val <= expected_max) begin
+            int new_prescale = PRESCALE_DEFAULT_EXP * 2 + 1;
+            int run_clocks   = new_prescale * 10 + 20;  // 約 10 カウント分
+            int exp_min = 8;
+            int exp_max = 12;
+            int cnt_val;
+
+            wdata[0] = 32'(new_prescale);
+            axil_write(ADDR_PRESCALE, wdata);
+            axil_read(ADDR_PRESCALE, rdata);
+            check("PRESCALE readback (2x default)",
+                  rdata[0], 32'(new_prescale));
+
+            wdata[0] = CTRL_START; axil_write(ADDR_CTRL, wdata);
+            repeat(run_clocks) @(posedge aclk);
+            wdata[0] = CTRL_STOP;  axil_write(ADDR_CTRL, wdata);
+            axil_read(ADDR_CNT_LO, rdata);
+            cnt_val = int'(rdata[0]);
+            if (cnt_val >= exp_min && cnt_val <= exp_max) begin
                 $display("  [PASS] %-40s  cnt=%0d (in [%0d,%0d])",
-                         "PRESCALE=9 count in range", cnt_val, expected_min, expected_max);
+                         "PRESCALE=2x count in range", cnt_val, exp_min, exp_max);
                 pass_cnt++;
             end else begin
                 $display("  [FAIL] %-40s  cnt=%0d (exp [%0d,%0d])",
-                         "PRESCALE=9 count in range", cnt_val, expected_min, expected_max);
+                         "PRESCALE=2x count in range", cnt_val, exp_min, exp_max);
                 fail_cnt++;
             end
         end
 
-        // PRESCALE をリセット
-        wdata[0] = 32'h0; axil_write(ADDR_PRESCALE, wdata);
+        // PRESCALE をデフォルトに戻す
+        wdata[0] = 32'(PRESCALE_DEFAULT_EXP); axil_write(ADDR_PRESCALE, wdata);
 
         // =====================================================================
         // TC5: CNT_LO / CNT_HI 64-bit 連結
@@ -442,6 +464,25 @@ module timestamp_counter_tb;
         // (実機検証ではより長い実行時間が必要)
         $display("  INFO: overflow_count so far = %0d (expected 0 in short sim)", overflow_count);
         check("No spurious overflow during test", overflow_count, 0);
+
+        // =====================================================================
+        // TC10: NS_PER_TICK 読み出し専用レジスタ
+        // =====================================================================
+        $display("\n[TC10] NS_PER_TICK read-only register");
+
+        axil_read(ADDR_NS_PER_TICK, rdata);
+        check("NS_PER_TICK register == parameter", rdata[0], 32'(NS_PER_TICK));
+
+        // 書き込みを試みても値が変わらないことを確認 (RO)
+        wdata[0] = 32'hDEAD_BEEF;
+        axil_write(ADDR_NS_PER_TICK, wdata);
+        axil_read(ADDR_NS_PER_TICK, rdata);
+        check("NS_PER_TICK unchanged after write attempt", rdata[0], 32'(NS_PER_TICK));
+
+        $display("  INFO: CLK_FREQ_HZ=%0d, NS_PER_TICK=%0d, PRESCALE_DEFAULT=%0d",
+                 CLK_FREQ_HZ, NS_PER_TICK, PRESCALE_DEFAULT_EXP);
+        $display("  INFO: Effective tick period = %0d ns (= (PRESCALE+1)/%0d MHz)",
+                 (PRESCALE_DEFAULT_EXP + 1) * 1_000_000_000 / CLK_FREQ_HZ, CLK_FREQ_HZ / 1_000_000);
 
         // =====================================================================
         // Summary

@@ -2,21 +2,30 @@
 // timestamp_counter.sv
 // 64-bit Timestamp Counter with AXI4-Lite Interface
 //
+// Parameters:
+//   CLK_FREQ_HZ  : 入力クロック周波数 [Hz]  (default: 100_000_000 = 100 MHz)
+//   NS_PER_TICK  : 1 tick あたりのナノ秒数  (default: 10 ns @ 100 MHz)
+//                  → PRESCALE 初期値を自動計算:
+//                     PRESCALE_DEFAULT = (NS_PER_TICK * CLK_FREQ_HZ / 1_000_000_000) - 1
+//                  例: 100 MHz, NS_PER_TICK=1000 → PRESCALE=99 (1 µs/tick)
+//
 // Register Map (AXI_ADDR_WIDTH=8, 32-bit registers, word-addressed):
 //
 //   0x00  CTRL (W/R)
-//           [0] START  : 1 = カウント開始 (STOP=0 の間は保持)
-//           [1] STOP   : 1 = カウント停止 (START より優先)
-//           [2] RESET  : 1 = カウンタを 0 にリセット (セルフクリア)
+//           [0] START     : 1 = カウント開始 (STOP=0 の間は保持)
+//           [1] STOP      : 1 = カウント停止 (START より優先)
+//           [2] RESET     : 1 = カウンタを 0 にリセット (セルフクリア)
 //   0x04  STATUS (RO)
-//           [0] RUNNING : 1 = カウント中
-//           [1] LATCHED : 1 = スナップショット取得済み (SNAP_LO 読み出しでクリア)
-//   0x08  CNT_LO (RO) : カウンタ下位 32-bit (ライブ値)
-//   0x0C  CNT_HI (RO) : カウンタ上位 32-bit (ライブ値)
-//   0x10  SNAP_LO (RO): スナップショット下位 32-bit
-//                        読み出しトリガ: CNT_LO/CNT_HI をアトミックにラッチ
-//   0x14  SNAP_HI (RO): スナップショット上位 32-bit
-//   0x18  PRESCALE (W/R): [31:0] クロック分周値 (0=毎クロック, N=N+1 クロックに1カウント)
+//           [0] RUNNING   : 1 = カウント中
+//           [1] LATCHED   : 1 = スナップショット取得済み (SNAP_LO 読み出しでクリア)
+//   0x08  CNT_LO (RO)     : カウンタ下位 32-bit (ライブ値)
+//   0x0C  CNT_HI (RO)     : カウンタ上位 32-bit (ライブ値)
+//   0x10  SNAP_LO (RO)    : スナップショット下位 32-bit
+//                            読み出しトリガ: 64-bit をアトミックにラッチ
+//   0x14  SNAP_HI (RO)    : スナップショット上位 32-bit
+//   0x18  PRESCALE (W/R)  : [31:0] クロック分周値 (0=毎クロック, N=N+1 クロックに1カウント)
+//                            リセット時に NS_PER_TICK / CLK_FREQ_HZ から自動設定
+//   0x1C  NS_PER_TICK (RO): parameter NS_PER_TICK の値 [ns] (読み出し専用)
 //
 // 動作概要:
 //   - CTRL.START=1 を書くとカウント開始
@@ -31,7 +40,9 @@
 
 module timestamp_counter #(
     parameter integer AXI_ADDR_WIDTH = 8,
-    parameter integer AXI_DATA_WIDTH = 32
+    parameter integer AXI_DATA_WIDTH = 32,
+    parameter longint CLK_FREQ_HZ    = 100_000_000,  // 入力クロック周波数 [Hz]
+    parameter longint NS_PER_TICK    = 10             // 1 tick あたりのナノ秒数 [ns]
 )(
     // AXI4-Lite Slave Interface
     input  logic                      s_axi_aclk,
@@ -69,15 +80,24 @@ module timestamp_counter #(
 );
 
     // -------------------------------------------------------------------------
+    // PRESCALE 初期値 (elaboration 時に計算)
+    //   cycles_per_tick = NS_PER_TICK * CLK_FREQ_HZ / 1_000_000_000
+    //   PRESCALE_DEFAULT = cycles_per_tick - 1  (最小 0)
+    // -------------------------------------------------------------------------
+    localparam longint CYCLES_PER_TICK   = NS_PER_TICK * CLK_FREQ_HZ / 1_000_000_000;
+    localparam longint PRESCALE_DEFAULT  = (CYCLES_PER_TICK > 1) ? CYCLES_PER_TICK - 1 : 0;
+
+    // -------------------------------------------------------------------------
     // Register Addresses
     // -------------------------------------------------------------------------
-    localparam logic [AXI_ADDR_WIDTH-1:0] ADDR_CTRL     = 8'h00;
-    localparam logic [AXI_ADDR_WIDTH-1:0] ADDR_STATUS   = 8'h04;
-    localparam logic [AXI_ADDR_WIDTH-1:0] ADDR_CNT_LO   = 8'h08;
-    localparam logic [AXI_ADDR_WIDTH-1:0] ADDR_CNT_HI   = 8'h0C;
-    localparam logic [AXI_ADDR_WIDTH-1:0] ADDR_SNAP_LO  = 8'h10;
-    localparam logic [AXI_ADDR_WIDTH-1:0] ADDR_SNAP_HI  = 8'h14;
-    localparam logic [AXI_ADDR_WIDTH-1:0] ADDR_PRESCALE = 8'h18;
+    localparam logic [AXI_ADDR_WIDTH-1:0] ADDR_CTRL        = 8'h00;
+    localparam logic [AXI_ADDR_WIDTH-1:0] ADDR_STATUS      = 8'h04;
+    localparam logic [AXI_ADDR_WIDTH-1:0] ADDR_CNT_LO      = 8'h08;
+    localparam logic [AXI_ADDR_WIDTH-1:0] ADDR_CNT_HI      = 8'h0C;
+    localparam logic [AXI_ADDR_WIDTH-1:0] ADDR_SNAP_LO     = 8'h10;
+    localparam logic [AXI_ADDR_WIDTH-1:0] ADDR_SNAP_HI     = 8'h14;
+    localparam logic [AXI_ADDR_WIDTH-1:0] ADDR_PRESCALE    = 8'h18;
+    localparam logic [AXI_ADDR_WIDTH-1:0] ADDR_NS_PER_TICK = 8'h1C;
 
     // -------------------------------------------------------------------------
     // Internal Registers
@@ -132,7 +152,7 @@ module timestamp_counter #(
             reg_start      <= 1'b0;
             reg_stop       <= 1'b1;   // 初期状態: 停止
             reg_reset_req  <= 1'b0;
-            reg_prescale   <= 32'h0;
+            reg_prescale   <= 32'(PRESCALE_DEFAULT);
         end else begin
             // セルフクリアビット
             reg_reset_req <= 1'b0;
@@ -256,14 +276,15 @@ module timestamp_counter #(
                 ar_addr_latch <= s_axi_araddr;
 
                 case (s_axi_araddr)
-                    ADDR_CTRL    : s_axi_rdata <= {29'h0, reg_reset_req, reg_stop, reg_start};
-                    ADDR_STATUS  : s_axi_rdata <= {30'h0, stat_latched, stat_running};
-                    ADDR_CNT_LO  : s_axi_rdata <= counter[31:0];
-                    ADDR_CNT_HI  : s_axi_rdata <= counter[63:32];
-                    ADDR_SNAP_LO : s_axi_rdata <= counter[31:0];    // ラッチトリガ (上記 always_ff 参照)
-                    ADDR_SNAP_HI : s_axi_rdata <= snapshot[63:32];  // ラッチ済み上位ワード
-                    ADDR_PRESCALE: s_axi_rdata <= reg_prescale;
-                    default      : s_axi_rdata <= 32'hDEAD_BEEF;
+                    ADDR_CTRL       : s_axi_rdata <= {29'h0, reg_reset_req, reg_stop, reg_start};
+                    ADDR_STATUS     : s_axi_rdata <= {30'h0, stat_latched, stat_running};
+                    ADDR_CNT_LO     : s_axi_rdata <= counter[31:0];
+                    ADDR_CNT_HI     : s_axi_rdata <= counter[63:32];
+                    ADDR_SNAP_LO    : s_axi_rdata <= counter[31:0];       // ラッチトリガ
+                    ADDR_SNAP_HI    : s_axi_rdata <= snapshot[63:32];     // ラッチ済み上位ワード
+                    ADDR_PRESCALE   : s_axi_rdata <= reg_prescale;
+                    ADDR_NS_PER_TICK: s_axi_rdata <= 32'(NS_PER_TICK);   // parameter 値 (RO)
+                    default         : s_axi_rdata <= 32'hDEAD_BEEF;
                 endcase
             end
 
