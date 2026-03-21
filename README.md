@@ -12,13 +12,15 @@ https://claude.ai/chat/9a1d7436-34da-43a2-bbae-d15794dd84f7
 .
 ├── component.xml            # Vivado IP-XACT 記述子（IP Creator 用）
 ├── hdl/
-│   └── ltc2668_axi.sv       # AXI4-Lite スレーブ + SPI マスター RTL
+│   ├── ltc2668_axi.sv           # AXI4-Lite スレーブ + SPI マスター RTL
+│   └── timestamp_counter.sv     # 64-bit タイムスタンプカウンタ (AXI4-Lite)
 ├── xgui/
 │   └── ltc2668_axi.tcl      # Vivado IP カスタマイズ GUI スクリプト
 ├── sim/
 │   ├── ltc2668_axi_tb.sv        # SystemVerilog テストベンチ (スタンドアロン)
 │   ├── ltc2668_axi_vip_tb.sv    # AXI VIP テストベンチ (Vivado xsim 用)
-│   └── create_vip_project.tcl   # Vivado VIP シミュレーションプロジェクト自動生成
+│   ├── create_vip_project.tcl    # Vivado VIP シミュレーションプロジェクト自動生成
+│   └── timestamp_counter_tb.sv  # timestamp_counter AXI VIP テストベンチ
 ├── ltc2668_drv.h            # C ドライバ ヘッダ
 ├── ltc2668_drv.c            # C ドライバ 実装
 ├── ltc2668_example.c        # 使用例
@@ -37,6 +39,68 @@ https://claude.ai/chat/9a1d7436-34da-43a2-bbae-d15794dd84f7
 | SPI フレーム長 | 32bit（CMD[3:0] \| ADDR[3:0] \| DATA[15:0] \| X[7:0]） |
 | デフォルト SPI クロック | AXI クロック / 8（100MHz 時 12.5MHz） |
 | 対応スパン | 0〜5V / 0〜10V / ±5V / ±10V / ±2.5V |
+
+---
+
+## timestamp_counter
+
+64-bit タイムスタンプカウンタモジュール。AXI4-Lite レジスタで開始・停止・リセットを制御します。
+
+### 特徴
+
+| 項目 | 内容 |
+|------|------|
+| カウンタ幅 | 64-bit (最大 `2^64 - 1` カウント) |
+| 制御 | AXI4-Lite スレーブ (32-bit × 7 レジスタ) |
+| 分周 | PRESCALE レジスタで任意の分周比を設定可能 |
+| スナップショット | SNAP_LO 読み出しで 64-bit をアトミックにラッチ |
+| オーバーフロー | `overflow_pulse` 出力 (1 クロック幅パルス) |
+
+### レジスタマップ
+
+| オフセット | 名前 | アクセス | 説明 |
+|-----------|------|---------|------|
+| 0x00 | CTRL | R/W | `[0]` START, `[1]` STOP, `[2]` RESET (セルフクリア) |
+| 0x04 | STATUS | RO | `[0]` RUNNING, `[1]` LATCHED |
+| 0x08 | CNT_LO | RO | カウンタ下位 32-bit (ライブ値) |
+| 0x0C | CNT_HI | RO | カウンタ上位 32-bit (ライブ値) |
+| 0x10 | SNAP_LO | RO | スナップショット下位 32-bit (読み出しでラッチトリガ) |
+| 0x14 | SNAP_HI | RO | スナップショット上位 32-bit (読み出しで LATCHED クリア) |
+| 0x18 | PRESCALE | R/W | 分周値 (0=毎クロック, N=N+1 クロックに 1 カウント) |
+
+### 動作説明
+
+```
+CTRL.START=1  → カウント開始
+CTRL.STOP=1   → カウント停止 (START より優先)
+CTRL.RESET=1  → カウンタを 0 にリセット (セルフクリア, START/STOP 状態は保持)
+
+アトミックスナップショット手順:
+  1. SNAP_LO を読む → 64-bit カウンタをラッチ, STATUS.LATCHED=1
+  2. SNAP_HI を読む → 上位 32-bit 取得, STATUS.LATCHED=0
+```
+
+### インスタンス例
+
+```systemverilog
+timestamp_counter #(
+    .AXI_ADDR_WIDTH (8),
+    .AXI_DATA_WIDTH (32)
+) u_ts_cnt (
+    .s_axi_aclk    (aclk),
+    .s_axi_aresetn (aresetn),
+    // ... AXI4-Lite 接続 ...
+    .overflow_pulse (ts_overflow)
+);
+```
+
+### テストベンチ実行
+
+```bash
+# AXI VIP テストベンチを Vivado で実行
+# create_vip_project.tcl に timestamp_counter_tb.sv を追加して実行
+vivado -mode batch -source sim/create_vip_project.tcl
+```
 
 ---
 
